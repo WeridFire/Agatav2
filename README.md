@@ -1,7 +1,7 @@
 # Agata Chess Engine  
 
 <p align="left">
-  <img src="agatalogo.jpg" alt="Agata Logo" width="200">
+  <img src="Agatalogo.jpg" alt="Agata Logo" width="200">
 </p>
 
 Agata is a high-performance chess engine designed for strategic gameplay and efficient computation. 
