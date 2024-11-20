@@ -2043,11 +2043,53 @@ int pv_length[max_ply];
 // PV table[ply][ply]
 int pv_table[max_ply][max_ply];
 
+// follow PV & score PV move
+int follow_pv, score_pv;
+
 // half move counter
 int ply;
 
+// enable PV move scoring
+static inline void enable_pv_scoring(moves* move_list){
+    // disable following PV
+    follow_pv = 0;
+
+    for (int count = 0; count < move_list->count; count++){
+        // make sure we hit PV move
+        if (pv_table[0][ply] == move_list->moves[count]){
+            // enable move scoring
+            score_pv = 1;
+            // enable following PV
+            follow_pv = 1;
+        }
+    }
+}
+
+/*  =======================
+         Move ordering
+    =======================
+
+    1. PV move
+    2. Captures in MVV/LVA
+    3. 1st killer move
+    4. 2nd killer move
+    5. History moves
+    6. Unsorted moves
+*/
 // score moves
 static inline int score_move(int move){
+
+    // if PV move scoring is allowed
+    if (score_pv){
+        // make sure we are dealing with PV move
+        if (pv_table[0][ply] == move){
+            // disable score PV flag
+            score_pv = 0;
+            // give PV move the highest score to search it first
+            return 20000;
+        }
+    }
+
     if (get_move_capture(move)){
         int target_piece = P;
         int start_piece, end_piece;
@@ -2066,7 +2108,7 @@ static inline int score_move(int move){
         }
 
         // score move by MVV LVA lookup [source piece][target piece]
-        return mvv_lva[get_move_piece(move)][target_piece];
+        return mvv_lva[get_move_piece(move)][target_piece] + 10000;
     }
 
     // score quiet move
@@ -2088,7 +2130,7 @@ static inline int score_move(int move){
 }
 
 // sort moves TBD improve sorting algo
-static inline int sort_moves(moves* move_list){
+static inline void sort_moves(moves* move_list){
     // move scores
     std::vector<int> move_scores(move_list->count);
 
@@ -2165,7 +2207,12 @@ static inline int quiescence(int alpha, int beta) {
 }
 
 //negamax alpha beta search with fail-hard approach -> maybe also implement soft? TBD
+const int full_depth_moves = 4;
+const int reduction_limit = 3;
 static inline int negamax(int alpha, int beta, int depth){
+    // define find PV node variable
+    int found_pv = 0;
+
     // init PV length
     pv_length[ply] = ply;
 
@@ -2192,7 +2239,17 @@ static inline int negamax(int alpha, int beta, int depth){
 
     moves move_list[1];
     generate_moves(move_list);
+
+    // if we are now following PV line
+    if (follow_pv)
+        // enable PV move scoring
+        enable_pv_scoring(move_list);
+
+
     sort_moves(move_list);
+
+    // number of moves searched in a move list
+    int moves_searched = 0;
 
     // loop over moves within a movelist
     for (int count = 0; count < move_list->count; count++){
@@ -2210,12 +2267,68 @@ static inline int negamax(int alpha, int beta, int depth){
 
         legal_moves++;
 
-        // score current move
-        int score = -negamax(-beta, -alpha, depth - 1);
+        int score;
+
+        // on PV node hit --> code from CMK,  TBD understand it better 
+        if (found_pv){
+            /* Once you've found a move with a score that is between alpha and beta,
+               the rest of the moves are searched with the goal of proving that they are all bad.
+               It's possible to do this a bit faster than a search that worries that one
+               of the remaining moves might be good. */
+            score = -negamax(-alpha - 1, -alpha, depth - 1);
+
+            /* If the algorithm finds out that it was wrong, and that one of the
+               subsequent moves was better than the first PV move, it has to search again,
+               in the normal alpha-beta manner.  This happens sometimes, and it's a waste of time,
+               but generally not often enough to counteract the savings gained from doing the
+               "bad move proof" search referred to earlier. */
+            if ((score > alpha) && (score < beta)) // Check for failure.
+                /* re-search the move that has failed to be proved to be bad
+                   with normal alpha beta score bounds*/
+                score = -negamax(-beta, -alpha, depth - 1);
+        }
+
+        // for all other types of nodes (moves)
+        else{
+            // full depth search
+            if (moves_searched == 0)
+                // do normal alpha beta search
+                score = -negamax(-beta, -alpha, depth - 1);
+
+            // late move reduction (LMR)
+            else{
+                // condition to consider LMR
+                if (
+                    moves_searched >= full_depth_moves &&
+                    depth >= reduction_limit &&
+                    in_check == 0 &&
+                    get_move_capture(move_list->moves[count]) == 0 &&
+                    get_move_promoted(move_list->moves[count]) == 0
+                    )
+                    // search current move with reduced depth:
+                    score = -negamax(-alpha - 1, -alpha, depth - 2);
+
+                // hack to ensure that full-depth search is done
+                else score = alpha + 1;
+
+                // if found a better move during LMR
+                if (score > alpha){
+                    // re-search at full depth but with narrowed score bandwith
+                    score = -negamax(-alpha - 1, -alpha, depth - 1);
+
+                    // if LMR fails re-search at full depth and full score bandwith
+                    if ((score > alpha) && (score < beta))
+                        score = -negamax(-beta, -alpha, depth - 1);
+                }
+            }
+        }
 
         ply--;
 
         take_back();
+
+        // increment the counter of moves searched so far
+        moves_searched++;
 
         // fail-hard beta cutoff
         if (score >= beta){
@@ -2238,6 +2351,9 @@ static inline int negamax(int alpha, int beta, int depth){
 
             // PV node (move)
             alpha = score;
+
+            // PV variation flag on
+            found_pv = 1;
 
             // write PV move
             pv_table[ply][ply] = move_list->moves[count];
@@ -2273,6 +2389,9 @@ static inline int negamax(int alpha, int beta, int depth){
 void search_position(int depth){
     int score = 0;
     nodes = 0;
+    // reset follow PV flags
+    follow_pv = 0;
+    score_pv = 0;
 
     // clear helper data structures for search
     memset(killer_moves, 0, sizeof(killer_moves));
@@ -2283,7 +2402,7 @@ void search_position(int depth){
     // iterative deepening
     for (int current_depth = 1; current_depth <= depth; current_depth++)
     {
-        nodes = 0;
+        follow_pv = 1;
 
         // find best move within a given position
         score = negamax(-50000, 50000, current_depth);
@@ -2682,15 +2801,15 @@ int main(){
     init_all();
 
     // debug mode variable
-    int mode =-1;
+    int mode =0;
 
     // if debugging
     if (mode == 0)
     {
         // parse fen
-        parse_fen(start_position);
+        parse_fen(tricky_position);
         print_board();
-        search_position(5);
+        search_position(7);
     }
     else if (mode == 1)
         // connect to the GUI
