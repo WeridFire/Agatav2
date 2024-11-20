@@ -2210,9 +2210,6 @@ static inline int quiescence(int alpha, int beta) {
 const int full_depth_moves = 4;
 const int reduction_limit = 3;
 static inline int negamax(int alpha, int beta, int depth){
-    // define find PV node variable
-    int found_pv = 0;
-
     // init PV length
     pv_length[ply] = ply;
 
@@ -2236,6 +2233,28 @@ static inline int negamax(int alpha, int beta, int depth){
     if (in_check) depth++;
 
     int legal_moves = 0;
+
+    // null move pruning
+    if (depth >= 3 && in_check == 0 && ply){
+        copy_board();
+
+        // switch the side, giving opponent an extra move to make
+        side ^= 1;
+
+        // reset enpassant capture square
+        enpassant = no_sq;
+
+        /* search moves with reduced depth to find beta cutoffs
+           depth - 1 - R where R is a reduction limit */
+        int score = -negamax(-beta, -beta + 1, depth - 1 - 2);
+
+        take_back();
+
+        // fail-hard beta cutoff
+        if (score >= beta)
+            // node (move) fails high
+            return beta;
+    }
 
     moves move_list[1];
     generate_moves(move_list);
@@ -2268,60 +2287,45 @@ static inline int negamax(int alpha, int beta, int depth){
         legal_moves++;
 
         int score;
+        // full depth search
+        if (moves_searched == 0)
+            // do normal alpha beta search
+            score = -negamax(-beta, -alpha, depth - 1);
 
-        // on PV node hit --> code from CMK,  TBD understand it better 
-        if (found_pv){
-            /* Once you've found a move with a score that is between alpha and beta,
-               the rest of the moves are searched with the goal of proving that they are all bad.
-               It's possible to do this a bit faster than a search that worries that one
-               of the remaining moves might be good. */
-            score = -negamax(-alpha - 1, -alpha, depth - 1);
-
-            /* If the algorithm finds out that it was wrong, and that one of the
-               subsequent moves was better than the first PV move, it has to search again,
-               in the normal alpha-beta manner.  This happens sometimes, and it's a waste of time,
-               but generally not often enough to counteract the savings gained from doing the
-               "bad move proof" search referred to earlier. */
-            if ((score > alpha) && (score < beta)) // Check for failure.
-                /* re-search the move that has failed to be proved to be bad
-                   with normal alpha beta score bounds*/
-                score = -negamax(-beta, -alpha, depth - 1);
-        }
-
-        // for all other types of nodes (moves)
+        // late move reduction (LMR)
         else{
-            // full depth search
-            if (moves_searched == 0)
-                // do normal alpha beta search
-                score = -negamax(-beta, -alpha, depth - 1);
+            // condition to consider LMR
+            if (
+                moves_searched >= full_depth_moves &&
+                depth >= reduction_limit &&
+                in_check == 0 &&
+                get_move_capture(move_list->moves[count]) == 0 &&
+                get_move_promoted(move_list->moves[count]) == 0
+                )
+                // search current move with reduced depth:
+                score = -negamax(-alpha - 1, -alpha, depth - 2);
 
-            // late move reduction (LMR)
-            else{
-                // condition to consider LMR
-                if (
-                    moves_searched >= full_depth_moves &&
-                    depth >= reduction_limit &&
-                    in_check == 0 &&
-                    get_move_capture(move_list->moves[count]) == 0 &&
-                    get_move_promoted(move_list->moves[count]) == 0
-                    )
-                    // search current move with reduced depth:
-                    score = -negamax(-alpha - 1, -alpha, depth - 2);
+            // hack to ensure that full-depth search is done
+            else score = alpha + 1;
 
-                // hack to ensure that full-depth search is done
-                else score = alpha + 1;
+            // if found a better move during LMR
+            if (score > alpha){
+                /* Once you've found a move with a score that is between alpha and beta,
+                the rest of the moves are searched with the goal of proving that they are all bad.
+                It's possible to do this a bit faster than a search that worries that one
+                of the remaining moves might be good. */
+                score = -negamax(-alpha - 1, -alpha, depth - 1);
 
-                // if found a better move during LMR
-                if (score > alpha){
-                    // re-search at full depth but with narrowed score bandwith
-                    score = -negamax(-alpha - 1, -alpha, depth - 1);
-
-                    // if LMR fails re-search at full depth and full score bandwith
-                    if ((score > alpha) && (score < beta))
-                        score = -negamax(-beta, -alpha, depth - 1);
-                }
+                /* If the algorithm finds out that it was wrong, and that one of the
+                subsequent moves was better than the first PV move, it has to search again,
+                in the normal alpha-beta manner.  This happens sometimes, and it's a waste of time,
+                but generally not often enough to counteract the savings gained from doing the
+                "bad move proof" search referred to earlier. */
+                if ((score > alpha) && (score < beta))
+                    score = -negamax(-beta, -alpha, depth - 1);
             }
         }
+        
 
         ply--;
 
@@ -2351,9 +2355,6 @@ static inline int negamax(int alpha, int beta, int depth){
 
             // PV node (move)
             alpha = score;
-
-            // PV variation flag on
-            found_pv = 1;
 
             // write PV move
             pv_table[ply][ply] = move_list->moves[count];
@@ -2399,13 +2400,28 @@ void search_position(int depth){
     memset(pv_table, 0, sizeof(pv_table));
     memset(pv_length, 0, sizeof(pv_length));
 
+    // define initial alpha beta bounds
+    int alpha = -50000;
+    int beta = 50000;
+
     // iterative deepening
     for (int current_depth = 1; current_depth <= depth; current_depth++)
     {
         follow_pv = 1;
 
         // find best move within a given position
-        score = negamax(-50000, 50000, current_depth);
+        score = negamax(alpha, beta, current_depth);
+
+        // we fell outside the window, so try again with a full-width window (and the same depth)
+        if ((score <= alpha) || (score >= beta)) {
+            alpha = -50000;
+            beta = 50000;
+            continue;
+        }
+
+        // set up the window for the next iteration
+        alpha = score - 50;
+        beta = score + 50;
 
         std::cout << "\nscore : " << score << "     depth: " << current_depth << "     nodes: " << nodes << "   principal variation:";
         // loop over the moves within a PV line
