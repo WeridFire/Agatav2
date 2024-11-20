@@ -5,7 +5,7 @@
 </p>
 
 Agata is a high-performance chess engine designed for strategic gameplay and efficient computation. 
-It has been tested on [Lichess](lichess.org) for quite a wile and she has an elo between 1900-2200. 
+It has been tested on [Lichess](lichess.org) for quite a while and she has an elo between 1900-2200. 
 
 ---
 
