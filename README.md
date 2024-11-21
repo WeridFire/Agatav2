@@ -27,7 +27,7 @@ It has been tested on [Lichess](lichess.org) for quite a while and she has an el
   Reduces the search tree size while maintaining optimal move selection.  
 
 - **PV/Killer/History Move Ordering**  
-  Advanced move ordering techniques for faster search performance.  
+  Move ordering techniques for faster search performance.  
 
 - **Transposition Tables(TBD)**
   Avoids redundant calculations by reusing previously evaluated positions.  
