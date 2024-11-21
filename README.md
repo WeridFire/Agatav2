@@ -29,7 +29,7 @@ It has been tested on [Lichess](lichess.org) for quite a while and she has an el
 - **PV/Killer/History Move Ordering**  
   Advanced move ordering techniques for faster search performance.  
 
-- **Transposition Tables**  (TBD)
+- **Transposition Tables(TBD)**
   Avoids redundant calculations by reusing previously evaluated positions.  
 
 - **Comprehensive Evaluation Function**  
