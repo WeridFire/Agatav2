@@ -29,11 +29,11 @@ It has been tested on [Lichess](lichess.org) for quite a while and she has an el
 - **PV/Killer/History Move Ordering**  
   Advanced move ordering techniques for faster search performance.  
 
-- **Transposition Tables**  
+- **Transposition Tables**  (TBD)
   Avoids redundant calculations by reusing previously evaluated positions.  
 
 - **Comprehensive Evaluation Function**  
-  Evaluates material, position, pawn structure, mobility, and king safety.  
+  Evaluates material, position, pawn structure(TBD), mobility(TBD), and king safety(TBD).  
 
 - **UCI Protocol Support**  
   Fully compatible with Universal Chess Interface (UCI) GUIs.  
