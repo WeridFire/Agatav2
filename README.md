@@ -173,7 +173,7 @@ See [training/README.md](training/README.md) for detailed instructions on:
 
 - Engine architecture: marrets (WeridFire)
 - Neural network integration: 2024-2025
-- Tested on Lichess with 2200+ rating
+- Tested on Lichess with 2800+ rating
 
 ---
 
