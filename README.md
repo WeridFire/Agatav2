@@ -4,7 +4,7 @@
   <img src="Agatalogo.jpg" alt="Agata Logo" width="200">
 </p>
 
-Agata is a high-performance chess engine with **neural network evaluation** designed for strategic gameplay and efficient computation. Originally tested on [Lichess](https://lichess.org) with an Elo of 2200+, Agata now incorporates machine learning to improve position evaluation through self-learning.
+Agata is a high-performance chess engine with **neural network evaluation** designed for strategic gameplay and efficient computation. Originally tested on [Lichess](https://lichess.org) with an Elo of 2800+, Agata now incorporates machine learning to improve position evaluation through self-learning.
 
 ---
 
