@@ -361,3 +361,66 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# ============================================
+# Agata Chess Engine Specific
+# ============================================
+
+# Python virtual environment
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# Python compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Training data (large NPZ files)
+data/*.npz
+data/*.csv
+
+# Trained models (large text/binary files)
+models/*.txt
+models/*.onnx
+models/*.pt
+models/*.pth
+
+# Keep README files in data/models directories
+!data/README.md
+!models/README.md
+
+# PGN game databases (very large files)
+games/*.pgn
+
+# Keep a games README if needed
+!games/README.md
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.cache

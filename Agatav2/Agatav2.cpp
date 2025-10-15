@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include <conio.h>
 #include "sock.h"
+#include "neural.h"
 
 
 // define bitboard data type
@@ -186,7 +187,7 @@ int input_waiting()
     {
         init = 1;
         inh = GetStdHandle(STD_INPUT_HANDLE);
-        pipe = !GetConsoleMode(inh, &dw);
+        pipe = ~GetConsoleMode(inh, &dw);
         if (!pipe)
         {
             SetConsoleMode(inh, dw & ~(ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT));
@@ -2209,6 +2210,11 @@ const int mirror_score[128] ={
 
 //position evaluation returns score based on white perspective
 static inline int evaluate(){
+    // If neural evaluation is enabled and initialized, use it
+    if (nn_is_enabled()) {
+        // nn_value_cp() is defined from side-to-move perspective already
+        return nn_value_cp();
+    }
     // static evaluation score
     int score = 0;
     U64 bitboard;
@@ -2736,6 +2742,26 @@ void search_position(int depth){
     print_move(pv_table[0][0]);
     std::cout << std::endl;
 }
+
+// Optional: simple self-play data generation (fixed ply outcome labels)
+// Writes NPZ-compatible .npz via a tiny text intermediary (user converts) or prints to stdout.
+// For now, we provide a helper to dump features and outcomes to a .npz-like CSV.
+static void dump_features_and_result(const char* path, const std::vector<std::vector<float>>& X, const std::vector<float>& Z) {
+    FILE* f = nullptr;
+    fopen_s(&f, path, "w");
+    if (!f) return;
+    // CSV: first line dims, then rows of features and last column is z
+    fprintf(f, "N,%zu\n", X.size());
+    for (size_t i = 0; i < X.size(); ++i) {
+        const auto& v = X[i];
+        for (size_t j = 0; j < v.size(); ++j) {
+            fprintf(f, j+1==v.size()?"%g": "%g,", v[j]);
+        }
+        fprintf(f, ",%g\n", Z[i]);
+    }
+    fclose(f);
+}
+
 //no iterative deepining in the server one need to modify gui
 int search_server_position(int depth) {
     // find best move within a given position
@@ -3016,6 +3042,37 @@ void uci_loop(){
         else if (strncmp(input, "position", 8) == 0)
             parse_position(input);
 
+        // parse UCI "setoption" command (UseNN, NNModelPath)
+        else if (strncmp(input, "setoption", 9) == 0) {
+            // Expected forms:
+            // setoption name UseNN value true|false
+            // setoption name NNModelPath value C:\\path\\to\\model.onnx
+            char* name_ptr = strstr(input, "name ");
+            char* value_ptr = strstr(input, " value ");
+            if (name_ptr) name_ptr += 5; // after 'name '
+            if (value_ptr) { *value_ptr = '\0'; value_ptr += 7; }
+
+            if (name_ptr) {
+                if (strncmp(name_ptr, "UseNN", 5) == 0) {
+                    bool want_enable = false;
+                    if (value_ptr && (strncmp(value_ptr, "true", 4) == 0 || strncmp(value_ptr, "True", 4) == 0 || strncmp(value_ptr, "TRUE", 4) == 0)) want_enable = true;
+                    if (want_enable) {
+                        bool ok = nn_init();
+                        nn_set_enabled(ok);
+                        if (!ok) std::cout << "info string NN init failed (set NNModelPath first)\n";
+                    } else {
+                        nn_set_enabled(false);
+                    }
+                }
+                else if (strncmp(name_ptr, "NNModelPath", 11) == 0) {
+                    if (value_ptr && *value_ptr) {
+                        nn_set_model_path(value_ptr);
+                        std::cout << "info string NNModelPath set\n";
+                    }
+                }
+            }
+        }
+
         // parse UCI "ucinewgame" command
         else if (strncmp(input, "ucinewgame", 10) == 0)
             parse_position(startpos);
@@ -3030,7 +3087,10 @@ void uci_loop(){
 
         // parse UCI "uci" command
         else if (strncmp(input, "uci", 3) == 0){
-            std::cout << "id name Agata" << "\n" << "uciok" <<std::endl;
+            std::cout << "id name Agata" << "\n";
+            std::cout << "option name UseNN type check default false\n";
+            std::cout << "option name NNModelPath type string default \n";
+            std::cout << "uciok" << std::endl;
         }
     }
 }
@@ -3149,10 +3209,43 @@ void uci_server_loop() {
             break;
         }
 
+        // parse UCI "setoption" command (UseNN, NNModelPath)
+        else if (strncmp(buffer, "setoption", 9) == 0) {
+            char* name_ptr = strstr(buffer, (char*)"name ");
+            char* value_ptr = strstr(buffer, (char*)" value ");
+            if (name_ptr) name_ptr += 5; // after 'name '
+            if (value_ptr) { *value_ptr = '\0'; value_ptr += 7; }
+
+            if (name_ptr) {
+                if (strncmp(name_ptr, "UseNN", 5) == 0) {
+                    bool want_enable = false;
+                    if (value_ptr && (strncmp(value_ptr, "true", 4) == 0 || strncmp(value_ptr, "True", 4) == 0 || strncmp(value_ptr, "TRUE", 4) == 0)) want_enable = true;
+                    if (want_enable) {
+                        bool ok = nn_init();
+                        nn_set_enabled(ok);
+                        if (!ok) sendResponse(new_socket, "info string NN init failed (set NNModelPath first)\n");
+                    } else {
+                        nn_set_enabled(false);
+                    }
+                }
+                else if (strncmp(name_ptr, "NNModelPath", 11) == 0) {
+                    if (value_ptr && *value_ptr) {
+                        nn_set_model_path(value_ptr);
+                        sendResponse(new_socket, "info string NNModelPath set\n");
+                    }
+                }
+            }
+        }
+
         // parse UCI "uci" command
         else if (strncmp(buffer, "uci", 3) == 0) {
-            sendResponse(new_socket, "id name Agata \nuciok");
-            std::cout << "id name Agata \nuciok\n";
+            std::string reply =
+                std::string("id name Agata\n") +
+                "option name UseNN type check default false\n"
+                "option name NNModelPath type string default \n"
+                "uciok";
+            sendResponse(new_socket, reply.c_str());
+            std::cout << reply << "\n";
         }
     }
 }
@@ -3187,7 +3280,7 @@ int main(){
     init_all();
 
     // debug mode variable
-    int mode =0;
+    int mode = 2;
 
     // if debugging
     if (mode == 0)
