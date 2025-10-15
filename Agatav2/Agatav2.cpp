@@ -2,6 +2,8 @@
 #include <unordered_map>
 #include <chrono>
 #include <winsock2.h>
+#include <Windows.h>
+#include <conio.h>
 #include "sock.h"
 
 
@@ -140,6 +142,132 @@ int enpassant = no_sq;
 //castling rights
 int castle;
 
+//position key
+U64 hash_key;
+
+/**********************************\
+ ==================================
+
+       Time controls variables
+         by Richard Allbert
+
+ ==================================
+\**********************************/
+// exit from engine flag
+int quit = 0;
+// UCI "movestogo" command moves counter
+int movestogo = 30;
+// UCI "movetime" command time counter
+int movetime = -1;
+// UCI "time" command holder (ms)
+int _time = -1;
+// UCI "inc" command's time increment holder
+int inc = 0;
+// UCI "starttime" command time holder
+int starttime = 0;
+// UCI "stoptime" command time holder
+int stoptime = 0;
+// variable to flag time control availability
+int timeset = 0;
+// variable to flag when the time is up
+int stopped = 0;
+
+long long get_time_ms() {
+    return GetTickCount();
+}
+
+int input_waiting()
+{
+    static int init = 0, pipe;
+    static HANDLE inh;
+    DWORD dw;
+
+    if (!init)
+    {
+        init = 1;
+        inh = GetStdHandle(STD_INPUT_HANDLE);
+        pipe = !GetConsoleMode(inh, &dw);
+        if (!pipe)
+        {
+            SetConsoleMode(inh, dw & ~(ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT));
+            FlushConsoleInputBuffer(inh);
+        }
+    }
+
+    if (pipe)
+    {
+        if (!PeekNamedPipe(inh, NULL, 0, NULL, &dw, NULL)) return 1;
+        return dw;
+    }
+
+    else
+    {
+        GetNumberOfConsoleInputEvents(inh, &dw);
+        return dw <= 1 ? 0 : dw;
+    }
+}
+
+void read_input()
+{
+    // bytes to read holder
+    int bytes=0;
+
+    // GUI/user input
+    char input[256] = "", * endc;
+
+    // "listen" to STDIN
+    if (input_waiting())
+    {
+        // tell engine to stop calculating
+        stopped = true;
+
+        // loop to read bytes from STDIN
+        do
+        {
+            // Windows-specific way to read single byte from stdin
+            if (_kbhit()) {  // Verifica se c'è un byte pronto per la lettura
+                input[bytes] = _getch();  // Legge un carattere da stdin
+                bytes++;  // Incrementa il contatore dei byte letti
+            }
+        } while (bytes < 256 && _kbhit());  // Continua a leggere finché ci sono byte disponibili
+
+        // searches for the first occurrence of '\n'
+        endc = strchr(input, '\n');
+
+        // if found new line set value at pointer to 0
+        if (endc) *endc = 0;
+
+        // if input is available
+        if (strlen(input) > 0)
+        {
+            // match UCI "quit" command
+            if (strncmp(input, "quit", 4) == 0)
+            {
+                // tell engine to terminate execution    
+                quit = true;
+            }
+
+            // match UCI "stop" command
+            else if (strncmp(input, "stop", 4) == 0) {
+                // tell engine to terminate execution
+                quit = true;
+            }
+        }
+    }
+}
+
+// a bridge function to interact between search and GUI input
+static void communicate() {
+    // if time is up break here
+    if (timeset == 1 && get_time_ms() > stoptime) {
+        // tell engine to stop calculating
+        stopped = 1;
+    }
+
+    // read GUI input
+    read_input();
+}
+
 /**********************************\
  ==================================
 
@@ -175,7 +303,7 @@ static inline int get_ls1b_index(unsigned long long bitboard){
 unsigned int random_state = 1804289383; //to ensure every time grn funct is used a new num get generated
 
 //generate 32-bit pseudo legal numbers
-unsigned int get_random_U32_number(){
+unsigned int get_random_U32_number() {
     unsigned int number = random_state;
 
     // XOR shift algorithm
@@ -188,7 +316,7 @@ unsigned int get_random_U32_number(){
 }
 
 // generate 64-bit pseudo legal numbers
-U64 get_random_U64_number(){
+U64 get_random_U64_number() {
     U64 n1, n2, n3, n4;
 
     n1 = (U64)(get_random_U32_number()) & 0xFFFF;
@@ -200,9 +328,75 @@ U64 get_random_U64_number(){
 }
 
 // generate magic number candidate
-U64 generate_magic_number(){
+U64 generate_magic_number() {
     return get_random_U64_number() & get_random_U64_number() & get_random_U64_number();
 }
+
+/**********************************\
+ ==================================
+
+            Zobrist keys
+
+ ==================================
+\**********************************/
+// random piece keys [piece][square]
+U64 piece_keys[12][64];
+// random enpassant keys [square]
+U64 enpassant_keys[64];
+// random castling keys
+U64 castle_keys[16];
+// random side key
+U64 side_key;
+
+// init random hash keys
+void init_random_keys(){
+    random_state = 1804289383;
+    for (int piece = P; piece <= k; piece++){
+        for (int square = 0; square < 64; square++)
+            piece_keys[piece][square] = get_random_U64_number();
+    }
+
+    for (int square = 0; square < 64; square++)
+        enpassant_keys[square] = get_random_U64_number();
+
+    for (int index = 0; index < 16; index++)
+        castle_keys[index] = get_random_U64_number();
+
+    side_key = get_random_U64_number();
+}
+
+// generate position key from scratch (can be collisions)
+U64 generate_hash_key(){
+    U64 final_key = 0ULL;
+    U64 bitboard;
+
+    // loop over piece bitboards
+    for (int piece = P; piece <= k; piece++){
+        bitboard = bitboards[piece];
+        while (bitboard){
+            int square = get_ls1b_index(bitboard);
+
+            final_key ^= piece_keys[piece][square];
+
+            popSquare(bitboard, square);
+        }
+    }
+
+    // if enpassant square is on board
+    if (enpassant != no_sq)
+        // hash enpassant
+        final_key ^= enpassant_keys[enpassant];
+
+    // hash castling rights
+    final_key ^= castle_keys[castle];
+
+    // hash the side only if black is to move
+    if (side == black) final_key ^= side_key;
+
+    // return generated hash key
+    return final_key;
+}
+
 
 /**********************************\
  ==================================
@@ -267,6 +461,8 @@ void print_board() {
         << ((castle & bk) ? 'k' : '-')
         << ((castle & bq) ? 'q' : '-')
         << "\n\n";
+
+    std::cout << "     Hash Key: " << std::hex << hash_key << std::dec;
 }
 
 //parsing FEN
@@ -356,6 +552,9 @@ void parse_fen(char* fen){
     //init all occupancies
     occupancies[both] |= occupancies[white];
     occupancies[both] |= occupancies[black];
+
+    //init hash key of the pos
+    hash_key = generate_hash_key();
 }
 
 /**********************************\
@@ -979,11 +1178,13 @@ void print_move_list(moves* move_list) {
     memcpy(bitboards_copy, bitboards, 96);                                \
     memcpy(occupancies_copy, occupancies, 24);                            \
     side_copy = side, enpassant_copy = enpassant, castle_copy = castle;   \
+    U64 hash_key_copy = hash_key;                                         \
 //restore board state
 #define take_back()                                                       \
     memcpy(bitboards, bitboards_copy, 96);                                \
     memcpy(occupancies, occupancies_copy, 24);                            \
     side = side_copy, enpassant = enpassant_copy, castle = castle_copy;   \
+    hash_key = hash_key_copy;                                             \
 
 //attacked squares
 static inline int is_square_attacked(int square, int side) {
@@ -1076,6 +1277,11 @@ static inline int make_move(int move, int move_flag){
         popSquare(bitboards[piece], source_square);
         setSquare(bitboards[piece], target_square);
 
+        // hash piece
+        hash_key ^= piece_keys[piece][source_square]; // remove piece from source square in hash key
+        hash_key ^= piece_keys[piece][target_square]; // set piece to the target square in hash key
+
+
         //handle capture
         if (capture){
             int start_piece, end_piece;
@@ -1099,6 +1305,9 @@ static inline int make_move(int move, int move_flag){
                 {
                     //remove it from corresponding bitboard
                     popSquare(bitboards[bb_piece], target_square);
+
+                    // remove the piece from hash key
+                    hash_key ^= piece_keys[bb_piece][target_square];
                     break;
                 }
             }
@@ -1106,23 +1315,81 @@ static inline int make_move(int move, int move_flag){
 
         //handle pawn promotions
         if (promoted) {
-            //remove the pawn
-            popSquare(bitboards[(side == white) ? P : p], target_square);
+            // white to move
+            if (side == white)
+            {
+                // erase the pawn from the target square
+                popSquare(bitboards[P], target_square);
 
-            //put promoted piece on the board
+                // remove pawn from hash key
+                hash_key ^= piece_keys[P][target_square];
+            }
+
+            // black to move
+            else
+            {
+                // erase the pawn from the target square
+                popSquare(bitboards[p], target_square);
+
+                // remove pawn from hash key
+                hash_key ^= piece_keys[p][target_square];
+            }
+
+            // set up promoted piece on chess board
             setSquare(bitboards[promoted_piece], target_square);
+
+            // add promoted piece into the hash key
+            hash_key ^= piece_keys[promoted_piece][target_square];
         }
 
         //handle enpassant
         if (enpass) {
             (side == white) ? popSquare(bitboards[p], target_square + 8) : popSquare(bitboards[P], target_square - 8);
+
+            // white to move
+            if (side == white){
+                // remove captured pawn
+                popSquare(bitboards[p], target_square + 8);
+
+                // remove pawn from hash key
+                hash_key ^= piece_keys[p][target_square + 8];
+            }
+
+            // black to move
+            else{
+                // remove captured pawn
+                popSquare(bitboards[P], target_square - 8);
+
+                // remove pawn from hash key
+                hash_key ^= piece_keys[P][target_square - 8];
+            }
         }
-        //reset enpassant because you can do it only the move after
+        
+        //hash enpassant if available (remove enpassant square from hash key )
+        if (enpassant != no_sq) hash_key ^= enpassant_keys[enpassant];
+
+        ///reset enpassant because you can do it only the move after
         enpassant = no_sq;
 
         //handle double pawn push to set the enpassant sq
         if (double_push){
-            (side == white) ? (enpassant = target_square + 8) : (enpassant = target_square - 8);
+            // white to move
+            if (side == white){
+                // set enpassant square
+                enpassant = target_square + 8;
+
+                // hash enpassant
+                hash_key ^= enpassant_keys[target_square + 8];
+            }
+
+            // black to move
+            else{
+                // set enpassant square
+                enpassant = target_square - 8;
+
+                // hash enpassant
+                hash_key ^= enpassant_keys[target_square - 8];
+            }
         }
 
         // handle castling moves (hardcoded)
@@ -1132,35 +1399,52 @@ static inline int make_move(int move, int move_flag){
                 case (g1):
                     popSquare(bitboards[R], h1);
                     setSquare(bitboards[R], f1);
+
+                    // hash rook
+                    hash_key ^= piece_keys[R][h1];  // remove rook from h1 from hash key
+                    hash_key ^= piece_keys[R][f1];  // put rook on f1 into a hash key
                     break;
 
                     // white castles queen side
                 case (c1):
                     popSquare(bitboards[R], a1);
                     setSquare(bitboards[R], d1);
+
+                    hash_key ^= piece_keys[R][a1];  // remove rook from a1 from hash key
+                    hash_key ^= piece_keys[R][d1];  // put rook on d1 into a hash key
                     break;
 
                     // black castles king side
                 case (g8):
                     popSquare(bitboards[r], h8);
                     setSquare(bitboards[r], f8);
+
+                    // hash rook
+                    hash_key ^= piece_keys[r][h8];  // remove rook from h8 from hash key
+                    hash_key ^= piece_keys[r][f8];  // put rook on f8 into a hash key
                     break;
 
                     // black castles queen side
                 case (c8):
                     popSquare(bitboards[r], a8);
                     setSquare(bitboards[r], d8);
+
+                    // hash rook
+                    hash_key ^= piece_keys[r][a8];  // remove rook from a8 from hash key
+                    hash_key ^= piece_keys[r][d8];  // put rook on d8 into a hash key
                     break;
             }
         }
 
-        //update castling rights
+        // hash castling
+        hash_key ^= castle_keys[castle];
+
+        // update castling rights
         castle &= castling_rights[source_square];
         castle &= castling_rights[target_square];
 
-        //update castling rights
-        castle &= castling_rights[source_square];
-        castle &= castling_rights[target_square];
+        // hash castling
+        hash_key ^= castle_keys[castle];
 
         //next lines reset the bitboards and reupdate them to the copied occupancies modified. It can be improved
         //reset occupancies
@@ -1175,6 +1459,9 @@ static inline int make_move(int move, int move_flag){
 
         //change side
         side ^= 1;
+
+        // hash side
+        hash_key ^= side_key;
 
         //make sure that king is not in check
         if (is_square_attacked((side == white) ? get_ls1b_index(bitboards[k]) : get_ls1b_index(bitboards[K]), side)){
@@ -1779,12 +2066,6 @@ static inline void perft_driver(int depth) {
 }
 
 //debug
-long long get_time_ms() {
-    auto now = std::chrono::system_clock::now();
-    auto now_ms = std::chrono::time_point_cast<std::chrono::milliseconds>(now);
-    auto epoch = now_ms.time_since_epoch();
-    return epoch.count();
-}
 void perft_test(int depth){
     std::cout << "\n     Performance test\n\n";
 
@@ -1792,7 +2073,7 @@ void perft_test(int depth){
     generate_moves(move_list);
 
     // init start time
-    long long start = get_time_ms();
+    long start = get_time_ms();
 
     // loop over generated moves
     for (int move_count = 0; move_count < move_list->count; move_count++){
@@ -1979,7 +2260,6 @@ static inline int evaluate(){
 \**********************************/
 
 // most valuable victim & less valuable attacker
-
 /*
 
     (Victims) Pawn Knight Bishop   Rook  Queen   King
@@ -2158,6 +2438,11 @@ static inline void sort_moves(moves* move_list){
 
 //quiesence search
 static inline int quiescence(int alpha, int beta) {
+    // every 2047 nodes
+    if ((nodes & 2047) == 0)
+        // "listen" to the GUI/user input
+        communicate();
+
     nodes++;
     int evaluation = evaluate();
     if (evaluation >= beta){
@@ -2191,6 +2476,8 @@ static inline int quiescence(int alpha, int beta) {
 
         take_back();
 
+        if (stopped == 1) return 0;
+
         if (score >= beta){
             // node (move) fails high
             return beta;
@@ -2210,6 +2497,11 @@ static inline int quiescence(int alpha, int beta) {
 const int full_depth_moves = 4;
 const int reduction_limit = 3;
 static inline int negamax(int alpha, int beta, int depth){
+    // every 2047 nodes
+    if ((nodes & 2047) == 0)
+        // "listen" to the GUI/user input
+        communicate();
+
     // init PV length
     pv_length[ply] = ply;
 
@@ -2249,6 +2541,8 @@ static inline int negamax(int alpha, int beta, int depth){
         int score = -negamax(-beta, -beta + 1, depth - 1 - 2);
 
         take_back();
+
+        if (stopped == 1) return 0;
 
         // fail-hard beta cutoff
         if (score >= beta)
@@ -2331,6 +2625,8 @@ static inline int negamax(int alpha, int beta, int depth){
 
         take_back();
 
+        if (stopped == 1) return 0;
+
         // increment the counter of moves searched so far
         moves_searched++;
 
@@ -2393,6 +2689,8 @@ void search_position(int depth){
     // reset follow PV flags
     follow_pv = 0;
     score_pv = 0;
+    // reset "time is up" flag
+    stopped = 0;
 
     // clear helper data structures for search
     memset(killer_moves, 0, sizeof(killer_moves));
@@ -2405,8 +2703,10 @@ void search_position(int depth){
     int beta = 50000;
 
     // iterative deepening
-    for (int current_depth = 1; current_depth <= depth; current_depth++)
-    {
+    for (int current_depth = 1; current_depth <= depth; current_depth++){
+
+        if (stopped == 1) break;
+
         follow_pv = 1;
 
         // find best move within a given position
@@ -2423,7 +2723,7 @@ void search_position(int depth){
         alpha = score - 50;
         beta = score + 50;
 
-        std::cout << "\nscore : " << score << "     depth: " << current_depth << "     nodes: " << nodes << "   principal variation:";
+        std::cout << "info score cp " << score << " depth " << current_depth << " nodes " << nodes << "pv ";
         // loop over the moves within a PV line
         for (int count = 0; count < pv_length[0]; count++) {
             // print PV move
@@ -2432,7 +2732,7 @@ void search_position(int depth){
         }
         std::cout << "\n";
     }
-    std::cout << "\n\nbestmove ";
+    std::cout << "bestmove ";
     print_move(pv_table[0][0]);
     std::cout << std::endl;
 }
@@ -2575,17 +2875,85 @@ void parse_position(char* command){
 
 // parse UCI "go" command
 void parse_go(char* command){
-    // init depth
+    // init parameters
     int depth = -1;
 
-    // init character pointer to the current depth argument
-    char* current_depth = NULL;
+    // init argument
+    char* argument = NULL;
 
-    // handle fixed depth search
-    if (current_depth = strstr(command, "depth")) depth = atoi(current_depth + 6);
+    // infinite search
+    if ((argument = strstr(command, "infinite"))) {}
 
-    // different time controls placeholder
-    else depth = 6;
+    // match UCI "binc" command
+    if ((argument = strstr(command, "binc")) && side == black)
+        // parse black time increment
+        inc = atoi(argument + 5);
+
+    // match UCI "winc" command
+    if ((argument = strstr(command, "winc")) && side == white)
+        // parse white time increment
+        inc = atoi(argument + 5);
+
+    // match UCI "wtime" command
+    if ((argument = strstr(command, "wtime")) && side == white)
+        // parse white time limit
+        _time = atoi(argument + 6);
+
+    // match UCI "btime" command
+    if ((argument = strstr(command, "btime")) && side == black)
+        // parse black time limit
+        _time = atoi(argument + 6);
+
+    // match UCI "movestogo" command
+    if ((argument = strstr(command, "movestogo")))
+        // parse number of moves to go
+        movestogo = atoi(argument + 10);
+
+    // match UCI "movetime" command
+    if ((argument = strstr(command, "movetime")))
+        // parse amount of time allowed to spend to make a move
+        movetime = atoi(argument + 9);
+
+    // match UCI "depth" command
+    if ((argument = strstr(command, "depth")))
+        // parse search depth
+        depth = atoi(argument + 6);
+
+    // if move time is not available
+    if (movetime != -1)
+    {
+        // set time equal to move time
+        _time = movetime;
+
+        // set moves to go to 1
+        movestogo = 1;
+    }
+
+    // init start time
+    starttime = get_time_ms();
+
+    // init search depth
+    depth = depth;
+
+    // if time control is available
+    if (_time != -1)
+    {
+        // flag we're playing with time control
+        timeset = 1;
+
+        // set up timing
+        _time /= movestogo;
+        _time -= 50;
+        stoptime = starttime + _time + inc;
+    }
+
+    // if depth is not available
+    if (depth == -1)
+        // set depth to 64 plies (takes ages to complete...)
+        depth = 64;
+
+    printf("time:%d start:%d stop:%d depth:%d timeset:%d\n",
+        _time, starttime, stoptime, depth, timeset);
 
     // search position
     search_position(depth);
@@ -2810,6 +3178,8 @@ void init_all(){
     init_sliders_attacks(bishop);
     init_sliders_attacks(rook);
 
+    // init random keys for hashing
+    init_random_keys();
 }
 
 int main(){
@@ -2823,9 +3193,10 @@ int main(){
     if (mode == 0)
     {
         // parse fen
-        parse_fen(tricky_position);
+        parse_fen(start_position);
         print_board();
-        search_position(7);
+        //search_position(10);
+        perft_test(6);
     }
     else if (mode == 1)
         // connect to the GUI
